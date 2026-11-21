@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merkle 快照差异工具</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Merkle 快照差异工具</h1>
+  <p class="sub">持久化 Merkle 树 · 固定主键区间 · 逐层剪枝 · 行级差异下载 · 增量同步</p>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="build">① 构建快照</button>
+  <button class="tab" data-tab="diff">② 版本对比</button>
+  <button class="tab" data-tab="check">③ 完整性与故障</button>
+  <button class="tab" data-tab="sync">④ 增量同步</button>
+</nav>
+
+<main>
+  <!-- ================= build tab ================= -->
+  <section id="tab-build" class="panel active">
+    <div class="card">
+      <h2>上传数据并构建 Merkle 树</h2>
+      <div class="grid">
+        <label>快照名称 <input id="build-name" placeholder="例如 snap-v1"></label>
+        <label>格式
+          <select id="build-format">
+            <option value="json">JSON（行对象数组）</option>
+            <option value="csv">CSV（首行表头）</option>
+          </select>
+        </label>
+        <label>主键字段（逗号分隔，留空默认 id）
+          <input id="build-keys" placeholder="id">
+        </label>
+        <label>字段类型声明（JSON，可选，如 {"amount":"number"}）
+          <input id="build-types" placeholder='{"amount":"number"}'>
+        </label>
+      </div>
+      <label class="filebox">
+        <input type="file" id="build-file">
+        <span id="build-file-label">选择数据文件…</span>
+      </label>
+      <details>
+        <summary>故障注入（演示断点续建）</summary>
+        <label>构建到第 N 个已核对节点后模拟中断（留空 = 完整构建）
+          <input id="build-fail-after" type="number" min="1" placeholder="例如 300">
+        </label>
+      </details>
+      <div class="row">
+        <button id="btn-build" class="primary">构建 / 续建</button>
+        <button id="btn-resume">从中断点继续</button>
+        <button id="btn-demo">载入示例数据 v1/v2</button>
+      </div>
+      <pre id="build-output" class="output"></pre>
+    </div>
+    <div class="card">
+      <h2>已持久化快照</h2>
+      <table id="snapshot-table">
+        <thead><tr><th>名称</th><th>状态</th><th>行数</th><th>根哈希（前 16 位）</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <button id="btn-refresh">刷新列表</button>
+    </div>
+  </section>
+
+  <!-- ================= diff tab ================= -->
+  <section id="tab-diff" class="panel">
+    <div class="card">
+      <h2>选择两版快照</h2>
+      <div class="grid">
+        <label>基线（旧）<select id="diff-base"></select></label>
+        <label>目标（新）<select id="diff-target"></select></label>
+      </div>
+      <div class="row">
+        <button id="btn-diff" class="primary">执行 Merkle 差异</button>
+        <button id="btn-download">下载行级差异 JSON</button>
+      </div>
+      <pre id="diff-output" class="output"></pre>
+    </div>
+
+    <div class="card stats">
+      <h2>实测读取统计（非估算）</h2>
+      <div class="statgrid">
+        <div><span id="st-nodes">–</span><label>实际打开的树节点信封</label></div>
+        <div><span id="st-rows">–</span><label>实际加载的行记录</label></div>
+        <div><span id="st-skip">–</span><label>哈希相同直接跳过的子树</label></div>
+        <div><span id="st-desc">–</span><label>需要继续下钻的子树</label></div>
+        <div><span id="st-scan-b">–</span><label>全量校验读取基线行</label></div>
+        <div><span id="st-scan-t">–</span><label>全量校验读取目标行</label></div>
+      </div>
+      <p class="hint" id="st-verdict"></p>
+    </div>
+
+    <div class="card">
+      <h2>逐层树视图（点击展开变动子树）</h2>
+      <div id="tree-view" class="tree"></div>
+    </div>
+
+    <div class="card">
+      <h2>行级差异</h2>
+      <div class="row counters">
+        <span class="pill inserted">新增 <b id="c-ins">0</b></span>
+        <span class="pill deleted">删除 <b id="c-del">0</b></span>
+        <span class="pill modified">修改 <b id="c-mod">0</b></span>
+      </div>
+      <div id="change-list"></div>
+    </div>
+  </section>
+
+  <!-- ================= check tab ================= -->
+  <section id="tab-check" class="panel">
+    <div class="card">
+      <h2>完整性校验</h2>
+      <label>快照 <select id="check-name"></select></label>
+      <div class="row"><button id="btn-check" class="primary">逐节点校验</button></div>
+      <pre id="check-output" class="output"></pre>
+    </div>
+    <div class="card">
+      <h2>故意破坏（演示受影响范围定位）</h2>
+      <div class="grid">
+        <label>快照 <select id="corrupt-name"></select></label>
+        <label>破坏方式
+          <select id="corrupt-kind">
+            <option value="node">叶子节点信封哈希（单桶）</option>
+            <option value="row">行块中的一行数据（单桶）</option>
+            <option value="internal">一级内部节点</option>
+            <option value="root">根节点</option>
+            <option value="source">原始上传文件</option>
+          </select>
+        </label>
+        <label>目标（桶号如 3a / 内部节点如 i2，可留空）
+          <input id="corrupt-target" placeholder="b3a / i2">
+        </label>
+      </div>
+      <div class="row"><button id="btn-corrupt">注入破坏</button></div>
+      <pre id="corrupt-output" class="output"></pre>
+    </div>
+  </section>
+
+  <!-- ================= sync tab ================= -->
+  <section id="tab-sync" class="panel">
+    <div class="card">
+      <h2>生成增量同步包</h2>
+      <div class="grid">
+        <label>基线快照 <select id="sync-base"></select></label>
+        <label>目标快照 <select id="sync-target"></select></label>
+      </div>
+      <div class="row"><button id="btn-sync-pkg" class="primary">下载同步包</button></div>
+      <p class="hint">同步包内含基线根哈希、目标根哈希与全部行级变更，并带包自检和。</p>
+    </div>
+    <div class="card">
+      <h2>接收端应用同步包</h2>
+      <div class="grid">
+        <label>接收端当前快照（必须等于基线根）
+          <select id="sync-receiver"></select>
+        </label>
+        <label>应用后新快照名称 <input id="sync-new" placeholder="replica-v2"></label>
+      </div>
+      <label class="filebox">
+        <input type="file" id="sync-file">
+        <span id="sync-file-label">选择同步包 JSON…</span>
+      </label>
+      <div class="row"><button id="btn-sync-apply">应用同步包</button></div>
+      <pre id="sync-output" class="output"></pre>
+      <p class="hint">基线根或 schema 不匹配时直接拒绝（409），接收端数据不被覆盖；
+        应用后重新建树并核对目标根，不一致则丢弃暂存区。</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <small>哈希输入编码：<code>TAG:LEN:PAYLOAD</code> · 叶子 256 桶 = sha256(主键)[0] ·
+  树结构固定 256→16→1，共 273 个节点</small>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
